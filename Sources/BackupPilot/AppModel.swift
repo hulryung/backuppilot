@@ -45,6 +45,14 @@ final class AppModel: ObservableObject {
     @Published var diagnosis: Advisor.Diagnosis?
     @Published var verifyReport: Advisor.VerifyReport?
 
+    // MARK: - 환경 조사
+
+    @Published var inventory: SystemInventory.Snapshot?
+    @Published var isSurveying = false
+    /// 지금 무엇을 읽고 있는지. 조사는 외부 명령을 여러 번 부르므로 멈춘 것처럼 보이기 쉽다.
+    @Published var surveyStatus = ""
+    @Published var environmentAdvice: Advisor.EnvironmentAdvice?
+
     /// 어시스턴트 탭의 대화 기록.
     @Published var conversation: [ChatEntry] = []
     /// 사용자 승인을 기다리는 해석된 명령.
@@ -195,6 +203,58 @@ final class AppModel: ObservableObject {
 
     func applyAllSuggestions() {
         planAdvice?.suggestions.forEach(apply)
+    }
+
+    // MARK: - 환경 조사
+
+    /// 설치된 소프트웨어 목록을 모은다. 읽기만 하므로 언제 눌러도 안전하다.
+    func surveyEnvironment() async {
+        guard !isSurveying else { return }
+        isSurveying = true
+        surveyStatus = "조사를 시작하는 중"
+        defer { isSurveying = false; surveyStatus = "" }
+
+        // 다시 조사했다는 것은 근거가 바뀌었다는 뜻이다. 옛 조언을 남겨 두면
+        // 지금 목록에 대한 판단인 것처럼 읽힌다.
+        environmentAdvice = nil
+
+        inventory = await SystemInventory.collect { [weak self] status in
+            Task { @MainActor in
+                // 조사가 끝난 뒤 늦게 도착한 진행 상황이 빈 문자열을 덮어쓰지 않도록.
+                guard let self, self.isSurveying else { return }
+                self.surveyStatus = status
+            }
+        }
+    }
+
+    func askForEnvironmentAdvice() async {
+        guard let client else {
+            codexError = CodexClient.Failure.notInstalled.errorDescription
+            return
+        }
+        guard let snapshot = inventory else { return }
+        guard !isAsking else { return }
+
+        isAsking = true
+        askingStatus = "Codex 가 설치 목록을 살펴보는 중"
+        codexError = nil
+        defer { isAsking = false; askingStatus = "" }
+
+        do {
+            environmentAdvice = try await Advisor.requestEnvironmentAdvice(
+                client: client,
+                inventory: snapshot,
+                items: plan.items,
+                volume: selectedVolume
+            )
+        } catch {
+            codexError = error.localizedDescription
+        }
+    }
+
+    /// 추천받은 경로가 이미 계획에 있는지. UI 에서 중복 제안을 표시하는 데 쓴다.
+    func planContains(_ relativePath: String) -> Bool {
+        plan.items.contains { $0.relativePath == relativePath }
     }
 
     // MARK: - Codex: 오류 진단

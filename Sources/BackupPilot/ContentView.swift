@@ -2,6 +2,7 @@ import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
     case plan = "계획"
+    case environment = "환경 조사"
     case backup = "백업"
     case restore = "복원"
     case assistant = "어시스턴트"
@@ -11,6 +12,7 @@ enum Tab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .plan: return "list.bullet.clipboard"
+        case .environment: return "square.grid.2x2"
         case .backup: return "externaldrive.badge.timemachine"
         case .restore: return "arrow.uturn.backward.circle"
         case .assistant: return "bubble.left.and.text.bubble.right"
@@ -33,6 +35,7 @@ struct ContentView: View {
             Group {
                 switch tab {
                 case .plan: PlanView()
+                case .environment: EnvironmentView()
                 case .backup: BackupView()
                 case .restore: RestoreView()
                 case .assistant: AssistantView()

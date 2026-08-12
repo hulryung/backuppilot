@@ -320,6 +320,139 @@ enum Advisor {
         """
     }
 
+    // MARK: - 5. 설치 환경 기반 백업 제안
+
+    struct EnvironmentAdvice: Codable {
+        struct Recommendation: Codable, Identifiable {
+            /// 홈 디렉터리 기준 상대경로.
+            var path: String
+            var title: String
+            /// "critical" | "recommended" | "optional"
+            var importance: String
+            /// "rsync" | "tarGz"
+            var strategy: String
+            var reason: String
+
+            var id: String { path }
+
+            var parsedStrategy: CopyStrategy? { CopyStrategy(rawValue: strategy) }
+            var level: Importance { Importance(rawValue: importance) ?? .optional }
+        }
+
+        enum Importance: String, Comparable {
+            case critical, recommended, optional
+
+            var label: String {
+                switch self {
+                case .critical: return "필수"
+                case .recommended: return "권장"
+                case .optional: return "선택"
+                }
+            }
+
+            /// 중요한 것이 위로 오도록. UI 정렬에만 쓴다.
+            private var rank: Int {
+                switch self {
+                case .critical: return 0
+                case .recommended: return 1
+                case .optional: return 2
+                }
+            }
+
+            static func < (lhs: Importance, rhs: Importance) -> Bool { lhs.rank < rhs.rank }
+        }
+
+        var summary: String
+        var recommendations: [Recommendation]
+        /// 백업할 필요 없이 재설치로 돌아오는 것.
+        var reinstallInstead: [String]
+        /// 파일로는 안 돌아오는 것 — 재로그인, 라이선스 키 등.
+        var cautions: [String]
+    }
+
+    private static let environmentSchema = """
+    {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "recommendations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "title": { "type": "string" },
+              "importance": { "type": "string", "enum": ["critical", "recommended", "optional"] },
+              "strategy": { "type": "string", "enum": ["rsync", "tarGz"] },
+              "reason": { "type": "string" }
+            },
+            "required": ["path", "title", "importance", "strategy", "reason"],
+            "additionalProperties": false
+          }
+        },
+        "reinstallInstead": { "type": "array", "items": { "type": "string" } },
+        "cautions": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["summary", "recommendations", "reinstallInstead", "cautions"],
+      "additionalProperties": false
+    }
+    """
+
+    /// 설치 목록을 프롬프트에 넣을 형태로 편다.
+    ///
+    /// 구획마다 상한을 두는 이유: formula 만 수백 개인 기계가 있고, 목록을 통째로 넣으면
+    /// 프롬프트가 본론(무엇을 백업할까)보다 나열에 잡아먹힌다. 잘라낸 개수는 밝힌다 —
+    /// 모델이 "이게 전부"라고 착각하면 안 되기 때문이다.
+    private static func inventoryTable(_ snapshot: SystemInventory.Snapshot, perSection: Int = 60) -> String {
+        snapshot.sections.compactMap { section -> String? in
+            guard !section.items.isEmpty else { return nil }
+            let shown = section.items.prefix(perSection)
+            let omitted = section.items.count - shown.count
+            let tail = omitted > 0 ? " … 외 \(omitted)개(생략)" : ""
+            return "[\(section.label) — \(section.items.count)개]\n" + shown.joined(separator: ", ") + tail
+        }
+        .joined(separator: "\n\n")
+    }
+
+    static func environmentPrompt(
+        inventory: SystemInventory.Snapshot,
+        items: [BackupItem],
+        volume: Volume?
+    ) -> String {
+        let planned = items.map(\.relativePath).sorted().joined(separator: ", ")
+
+        return """
+        \(context(volume: volume))
+
+        아래는 이 맥(\(inventory.osVersion))에 설치된 것들의 목록이다.
+
+        \(inventoryTable(inventory))
+
+        현재 백업 계획에 이미 들어 있는 경로:
+        \(planned.isEmpty ? "(없음)" : planned)
+
+        할 일 — 위 설치 목록을 근거로 판단해라. 홈 디렉터리를 훑어서는 알 수 없는 것,
+        즉 "이 앱이 깔려 있으니 홈의 이 경로가 중요하다"를 짚어 주는 것이 네 역할이다.
+
+        1. recommendations: 백업해야 하는데 위 계획에 없는 경로를 골라라.
+           - path 는 반드시 **홈 디렉터리 기준 상대경로**로 써라.
+             예: "Library/Application Support/Foo", ".config/bar"
+           - 홈 밖의 경로(/Applications, /opt/homebrew, /Library …)는 절대 쓰지 마라.
+             이 도구는 홈 디렉터리만 옮긴다. 홈 밖의 것은 재설치로 복구한다.
+           - 근거(reason)에는 목록의 어느 항목 때문에 그렇게 판단했는지 밝혀라.
+           - **확실하지 않으면 넣지 마라.** 있을 법한 경로를 지어내지 마라.
+             목록이 길수록 좋은 답이 아니다.
+           - strategy: 권한·인증정보가 들어 있거나 파일이 매우 많으면 tarGz, 아니면 rsync.
+        2. reinstallInstead: 위 목록 중 백업할 필요가 없는 것.
+           패키지 매니저나 App Store 가 다시 깔아주는 것들이다.
+        3. cautions: 파일을 옮겨도 되살아나지 않는 것.
+           재로그인이 필요한 인증, 라이선스 키, 계정에 묶인 것.
+        4. summary: 사용자가 먼저 읽을 2~3문장.
+
+        한국어로 답해라.
+        """
+    }
+
     // MARK: - 호출
 
     static func requestPlanAdvice(
@@ -354,6 +487,18 @@ enum Advisor {
             CommandIntent.self,
             prompt: intentPrompt(userText: userText, items: items, volume: volume),
             schema: intentSchema,
+            onProgress: onProgress
+        )
+    }
+
+    static func requestEnvironmentAdvice(
+        client: CodexClient, inventory: SystemInventory.Snapshot, items: [BackupItem], volume: Volume?,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> EnvironmentAdvice {
+        try await client.ask(
+            EnvironmentAdvice.self,
+            prompt: environmentPrompt(inventory: inventory, items: items, volume: volume),
+            schema: environmentSchema,
             onProgress: onProgress
         )
     }

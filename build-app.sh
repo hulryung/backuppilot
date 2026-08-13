@@ -28,7 +28,8 @@ cd "$(dirname "$0")"
 
 APP_NAME="BackupPilot"
 BUNDLE_ID="com.dkkang.backuppilot"
-VERSION="1.0"
+# 릴리스 스크립트가 태그 버전을 그대로 넘길 수 있도록 밖에서 덮어쓸 수 있게 둡니다.
+VERSION="${BACKUPPILOT_VERSION:-1.0}"
 
 echo "▸ swift build -c $CONFIG"
 swift build -c "$CONFIG"
@@ -76,11 +77,27 @@ PLIST
 #
 # 주의: ad-hoc 서명은 TCC 허용 기록을 재빌드 너머로 유지해 주지 못합니다.
 # 서명 주체가 인증서가 아니라 cdhash 라서, 빌드할 때마다 해시가 바뀌고
-# macOS 는 그것을 다른 앱으로 봅니다. 허용 기록을 유지하려면 키체인의
-# 자체 서명 인증서로 서명하세요 (--sign "인증서 이름").
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP" 2>/dev/null \
-  && echo "✓ 임시 서명 완료" \
-  || echo "! 서명 실패 — 실행은 되지만 권한을 매번 다시 물어볼 수 있습니다"
+# macOS 는 그것을 다른 앱으로 봅니다.
+#
+# BACKUPPILOT_SIGN_IDENTITY 에 인증서 이름을 주면 그것으로 서명합니다.
+# 이때는 공증에 필요한 두 가지를 함께 겁니다:
+#   --options runtime  강화된 런타임. 공증의 전제 조건입니다.
+#   --timestamp        보안 타임스탬프. 없으면 공증이 거부됩니다.
+SIGN_IDENTITY="${BACKUPPILOT_SIGN_IDENTITY:--}"
+
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  codesign --force --sign - --identifier "$BUNDLE_ID" "$APP" 2>/dev/null \
+    && echo "✓ 임시 서명 완료 (배포용이 아닙니다)" \
+    || echo "! 서명 실패 — 실행은 되지만 권한을 매번 다시 물어볼 수 있습니다"
+else
+  codesign --force --sign "$SIGN_IDENTITY" \
+    --identifier "$BUNDLE_ID" \
+    --options runtime \
+    --timestamp \
+    "$APP" \
+    && echo "✓ 서명 완료 — $SIGN_IDENTITY" \
+    || { echo "✗ 서명 실패" >&2; exit 1; }
+fi
 
 echo "✓ $APP"
 echo

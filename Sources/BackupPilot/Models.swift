@@ -65,6 +65,13 @@ struct BackupItem: Identifiable, Codable, Hashable {
     var isEnabled: Bool = true
     var excludes: [String] = []
 
+    /// 소스 코드를 담고 있다고 판단된 항목.
+    ///
+    /// 소스를 홈 어디에 두는지는 사람마다 다르다(`dev`, `src`, `Projects`, …).
+    /// 하나도 찾지 못했다면 그 사실을 사용자에게 알려야 한다 — 가장 잃으면 안 되는 것이
+    /// 아무 말 없이 계획에서 빠지는 상황을 막기 위한 표식이다.
+    var isSourceDirectory: Bool = false
+
     /// 측정 결과. 스캔 전에는 nil.
     var byteSize: Int64?
     var fileCount: Int?
@@ -120,6 +127,14 @@ struct BackupPlan: Codable {
     var items: [BackupItem]
 
     var enabledItems: [BackupItem] { items.filter { $0.isEnabled && $0.exists } }
+
+    /// 소스 디렉터리로 판단된 항목이 하나도 없는지.
+    ///
+    /// 켜짐/꺼짐이 아니라 **존재 여부**로 본다. 사용자가 일부러 끈 것은 선택이지만,
+    /// 애초에 찾지 못한 것은 도구가 놓친 것이라 서로 다르게 다뤄야 한다.
+    var lacksSourceDirectory: Bool {
+        !items.contains { $0.isSourceDirectory }
+    }
 
     /// 원본 기준 총 바이트. 측정되지 않은 항목은 0으로 센다.
     var totalSourceBytes: Int64 {

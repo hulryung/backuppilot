@@ -26,6 +26,10 @@ enum PlanBuilder {
         "DerivedData", ".Trash"
     ]
 
+    /// 자동 탐지가 디렉터리 하나에서 확인할 하위 항목 수 상한.
+    /// 앱 시작 시 동기적으로 도는 코드라 무한정 뒤질 수 없다.
+    static let shallowScanLimit = 200
+
     private struct Rule {
         var path: String
         var note: String
@@ -33,6 +37,8 @@ enum PlanBuilder {
         var reason: StrategyReason
         var enabled: Bool = true
         var excludes: [String] = commonExcludes
+        /// 소스 코드 디렉터리 후보인지.
+        var isSource: Bool = false
     }
 
     /// 큐레이션된 규칙. 존재하지 않는 경로는 계획에서 빠진다.
@@ -66,8 +72,18 @@ enum PlanBuilder {
         Rule(path: ".gitconfig", note: "git 전역 설정", strategy: .tarGz, reason: .permissionSensitive, excludes: []),
 
         // ── 소스 코드 (파일 수가 압도적) ──
-        Rule(path: "dev", note: "개발 소스 — 최우선", strategy: .tarGz, reason: .manyFiles),
-        Rule(path: "STM32Cube", note: "STM32 워크스페이스", strategy: .tarGz, reason: .manyFiles),
+        // 소스를 홈 어디에 두는지는 사람마다 다르다. 흔한 이름을 후보로 올려 두되,
+        // 이 목록에 없는 이름은 아래 `discoverSourceDirectories` 가 내용으로 찾아낸다.
+        // 대소문자만 다른 이름을 함께 넣지 말 것 — macOS 파일시스템은 기본이 대소문자 무시라
+        // `Projects` 와 `projects` 가 같은 디렉터리를 두 번 가리키게 된다.
+        Rule(path: "dev", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "src", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "Projects", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "Developer", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "code", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "work", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "repos", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
+        Rule(path: "workspace", note: "개발 소스", strategy: .tarGz, reason: .manyFiles, isSource: true),
 
         // ── 사용자 데이터 (열람 가능하게 평문) ──
         Rule(path: "Documents", note: "문서", strategy: .rsync, reason: .browsable),
@@ -90,19 +106,93 @@ enum PlanBuilder {
     /// 홈 디렉터리를 훑어 실제로 존재하는 항목만으로 계획을 만든다.
     static func defaultPlan() -> BackupPlan {
         let home = Home.url
-        let items = rules.compactMap { rule -> BackupItem? in
-            let path = home.appendingPathComponent(rule.path).path
-            guard FileManager.default.fileExists(atPath: path) else { return nil }
-            return BackupItem(
+        var items: [BackupItem] = []
+        // 대소문자를 무시해서 담는다. `fileExists` 는 대소문자 무시 파일시스템에서
+        // `~/projects` 를 `~/Projects` 로도 찾아 주므로, 이 방어가 없으면 같은
+        // 디렉터리가 두 항목으로 들어가 두 번 백업된다.
+        var seen = Set<String>()
+
+        for rule in rules {
+            let url = home.appendingPathComponent(rule.path)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard seen.insert(rule.path.lowercased()).inserted else { continue }
+            items.append(BackupItem(
                 relativePath: rule.path,
                 note: rule.note,
                 strategy: rule.strategy,
                 reason: rule.reason,
                 isEnabled: rule.enabled,
-                excludes: rule.excludes
-            )
+                excludes: rule.excludes,
+                isSourceDirectory: rule.isSource
+            ))
         }
+
+        items += discoverSourceDirectories(excluding: seen)
         return BackupPlan(items: items)
+    }
+
+    // MARK: - 자동 탐지
+
+    /// 홈 최상위에서 소스 디렉터리로 보이는 것을 찾는다.
+    ///
+    /// 위의 이름 목록은 흔한 관례를 담았을 뿐이고, 실제로 쓰는 이름은 그보다 다양하다.
+    /// 그래서 이름이 아니라 **내용**으로 판정한다 — 안에 git 저장소가 있으면 소스 디렉터리다.
+    /// 이름 목록에만 의존하면 `~/mycompany` 에 소스를 둔 사람은 가장 중요한 것을
+    /// 백업하지 못한 채 아무 경고도 못 받는다.
+    static func discoverSourceDirectories(excluding seen: Set<String>) -> [BackupItem] {
+        // macOS 표준 디렉터리와 클라우드 동기화 폴더는 보지 않는다.
+        // 여기에 git 저장소가 있더라도 소스 보관처로 다루는 것은 맞지 않고,
+        // 동기화 폴더는 어차피 원격에 사본이 있다.
+        let ignored: Set<String> = [
+            "documents", "desktop", "downloads", "library", "movies", "music",
+            "pictures", "public", "applications", "sites", "parallels",
+            "virtual machines", "vmware", "dropbox", "onedrive", "google drive",
+            "icloud drive", "creative cloud files"
+        ]
+
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: Home.url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        var found: [BackupItem] = []
+        for entry in entries {
+            let name = entry.lastPathComponent
+            let key = name.lowercased()
+            guard !ignored.contains(key), !seen.contains(key) else { continue }
+            guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            guard looksLikeSource(entry) else { continue }
+
+            found.append(BackupItem(
+                relativePath: name,
+                note: "git 저장소가 있어 소스 디렉터리로 판단했습니다",
+                strategy: .tarGz,
+                reason: .manyFiles,
+                excludes: commonExcludes,
+                isSourceDirectory: true
+            ))
+        }
+        return found.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    /// 이 디렉터리가 git 저장소를 품고 있는가.
+    /// 자기 자신이 저장소이거나, 바로 아래 하위 디렉터리 중 하나가 저장소이면 참으로 본다.
+    ///
+    /// 깊이 1단계에서 멈추는 것은 의도적이다. 앱 시작을 막는 동기 호출이라
+    /// 전부 재귀로 뒤지면 홈에 큰 트리가 있을 때 창이 뜨는 데만 몇 초가 걸린다.
+    static func looksLikeSource(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.appendingPathComponent(".git").path) { return true }
+
+        let children = (try? fm.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for child in children.prefix(shallowScanLimit) {
+            if fm.fileExists(atPath: child.appendingPathComponent(".git").path) { return true }
+        }
+        return false
     }
 
     /// 측정 결과를 반영해 전략을 재조정한다.

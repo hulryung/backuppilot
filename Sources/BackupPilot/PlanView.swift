@@ -1,9 +1,14 @@
+import AppKit
 import SwiftUI
 
 /// 무엇을 어떤 방식으로 백업할지 정하는 화면.
 struct PlanView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showAdvice = false
+    /// 소스 디렉터리 경고를 닫았는지. 사용자가 알고도 넘어가는 선택을 존중한다.
+    @State private var dismissedSourceWarning = false
+    /// 폴더 추가 결과를 한 줄로 알린다.
+    @State private var addNotice: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,6 +17,13 @@ struct PlanView: View {
                 subtitle: "무엇을 어떤 방식으로 옮길지 정합니다"
             ) {
                 HStack(spacing: 10) {
+                    Button {
+                        presentFolderPicker()
+                    } label: {
+                        Label("폴더 추가", systemImage: "folder.badge.plus")
+                    }
+                    .help("자동으로 잡히지 않은 폴더를 계획에 넣습니다")
+
                     Button {
                         Task { await model.scanSizes() }
                     } label: {
@@ -32,6 +44,20 @@ struct PlanView: View {
             }
 
             destinationBar
+
+            sourceWarning
+
+            if let notice = addNotice {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    Text(notice).font(.callout)
+                    Spacer()
+                    Button { addNotice = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
+            }
 
             if model.isScanning || model.isAsking {
                 HStack {
@@ -101,6 +127,52 @@ struct PlanView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
+    }
+
+    // MARK: - 소스 디렉터리 경고
+
+    /// 소스로 보이는 것을 하나도 찾지 못했으면 알린다.
+    ///
+    /// 이 경고가 필요한 이유: 계획은 존재하지 않는 경로를 조용히 버린다. 소스를
+    /// 흔치 않은 이름의 폴더에 두었다면 가장 중요한 것이 아무 표시 없이 빠지고,
+    /// 사용자는 백업이 끝난 뒤에야 알게 된다.
+    @ViewBuilder
+    private var sourceWarning: some View {
+        if model.plan.lacksSourceDirectory && !dismissedSourceWarning {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("소스 디렉터리를 찾지 못했습니다")
+                        .font(.callout.weight(.medium))
+                    Text("홈에서 git 저장소를 품은 폴더를 찾지 못했습니다. 소스를 다른 곳에 두었다면 「폴더 추가」로 직접 넣으세요.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("폴더 추가") { presentFolderPicker() }
+                Button { dismissedSourceWarning = true } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func presentFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = Home.url
+        panel.prompt = "추가"
+        panel.message = "백업에 추가할 폴더를 고르세요. 홈 디렉터리 안에 있어야 합니다."
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addNotice = model.addItem(at: url).message
     }
 
     // MARK: - 항목 표

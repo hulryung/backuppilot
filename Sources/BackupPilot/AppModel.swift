@@ -164,6 +164,50 @@ final class AppModel: ObservableObject {
         plan.items[index].reason = reason
     }
 
+    /// 폴더를 직접 계획에 넣는다. 자동 탐지가 놓친 곳을 사용자가 보탤 수 있어야 한다.
+    enum AddResult {
+        case added(String)
+        case outsideHome
+        case duplicate(String)
+
+        var message: String {
+            switch self {
+            case .added(let path):
+                return "\(path) 를 계획에 추가했습니다. 「크기 측정」을 눌러 용량을 반영하세요."
+            case .outsideHome:
+                return "홈 디렉터리 안의 폴더만 추가할 수 있습니다. 이 도구는 홈만 옮깁니다."
+            case .duplicate(let path):
+                return "\(path) 는 이미 계획에 있습니다."
+            }
+        }
+    }
+
+    @discardableResult
+    func addItem(at url: URL) -> AddResult {
+        // 심볼릭 링크를 거쳐 들어온 경로도 홈 안인지 제대로 판정되도록 양쪽을 푼다.
+        let home = Home.url.resolvingSymlinksInPath().path
+        let target = url.resolvingSymlinksInPath().path
+
+        guard target.hasPrefix(home + "/") else { return .outsideHome }
+        let relative = String(target.dropFirst(home.count + 1))
+
+        if let existing = plan.items.first(where: { $0.relativePath.lowercased() == relative.lowercased() }) {
+            return .duplicate(existing.relativePath)
+        }
+
+        plan.items.append(BackupItem(
+            relativePath: relative,
+            note: "직접 추가한 항목",
+            strategy: .rsync,
+            // `.userOverride` 로 두면 크기 측정 후 전략 재조정에서 제외된다.
+            // 방식을 고른 것이 아니라 대상을 고른 것이므로 재조정 대상으로 남긴다.
+            reason: .browsable,
+            excludes: PlanBuilder.commonExcludes,
+            isSourceDirectory: PlanBuilder.looksLikeSource(url)
+        ))
+        return .added(relative)
+    }
+
     // MARK: - Codex: 계획 상담
 
     func askForPlanAdvice() async {

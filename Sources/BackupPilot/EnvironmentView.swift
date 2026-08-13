@@ -190,6 +190,8 @@ struct EnvironmentView: View {
                 }
             }
 
+            droppedNote
+
             if !advice.reinstallInstead.isEmpty {
                 listSection(
                     title: "백업하지 않아도 되는 것",
@@ -208,6 +210,32 @@ struct EnvironmentView: View {
                     tint: .orange,
                     entries: advice.cautions
                 )
+            }
+        }
+    }
+
+    /// 홈에 없어서 버린 제안이 있었다는 사실만 조용히 남긴다.
+    ///
+    /// 아예 말하지 않으면 "제안이 3건뿐이네" 로 읽히고, 크게 띄우면 정작 쓸 만한
+    /// 제안보다 눈에 띈다. 접어 두되 개수는 보이게 하는 편이 맞다.
+    @ViewBuilder
+    private var droppedNote: some View {
+        if !model.droppedRecommendations.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(model.droppedRecommendations, id: \.self) { path in
+                        Text("~/" + path)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.top, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Text("홈에 없는 경로 \(model.droppedRecommendations.count)건은 제외했습니다")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

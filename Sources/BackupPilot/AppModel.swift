@@ -52,6 +52,12 @@ final class AppModel: ObservableObject {
     /// 지금 무엇을 읽고 있는지. 조사는 외부 명령을 여러 번 부르므로 멈춘 것처럼 보이기 쉽다.
     @Published var surveyStatus = ""
     @Published var environmentAdvice: Advisor.EnvironmentAdvice?
+    /// 홈에 없어서 버린 제안의 경로.
+    ///
+    /// 조용히 버리지 않고 개수를 밝히는 이유: 모델이 "Xcode 가 깔려 있으니 이 경로가 있겠지" 하고
+    /// 지어내는 일이 실제로 잦다. 몇 건이 왜 빠졌는지 보이면 사용자가 조언을 어느 정도
+    /// 믿어야 할지 스스로 판단할 수 있다.
+    @Published var droppedRecommendations: [String] = []
 
     /// 어시스턴트 탭의 대화 기록.
     @Published var conversation: [ChatEntry] = []
@@ -261,6 +267,7 @@ final class AppModel: ObservableObject {
         // 다시 조사했다는 것은 근거가 바뀌었다는 뜻이다. 옛 조언을 남겨 두면
         // 지금 목록에 대한 판단인 것처럼 읽힌다.
         environmentAdvice = nil
+        droppedRecommendations = []
 
         inventory = await SystemInventory.collect { [weak self] status in
             Task { @MainActor in
@@ -282,18 +289,35 @@ final class AppModel: ObservableObject {
         isAsking = true
         askingStatus = "Codex 가 설치 목록을 살펴보는 중"
         codexError = nil
+        droppedRecommendations = []
         defer { isAsking = false; askingStatus = "" }
 
         do {
-            environmentAdvice = try await Advisor.requestEnvironmentAdvice(
+            var advice = try await Advisor.requestEnvironmentAdvice(
                 client: client,
                 inventory: snapshot,
                 items: plan.items,
                 volume: selectedVolume
             )
+
+            // 홈에 없는 경로는 버린다. 백업할 수 없는 것을 "필수"라고 보여 주면
+            // 진짜 필요한 제안이 그 밑에 묻힌다.
+            let missing = advice.recommendations.filter { !homeContains($0.path) }
+            advice.recommendations.removeAll { !homeContains($0.path) }
+
+            droppedRecommendations = missing.map(\.path)
+            environmentAdvice = advice
         } catch {
             codexError = error.localizedDescription
         }
+    }
+
+    /// 홈 기준 상대경로가 실제로 존재하는지.
+    ///
+    /// 모델이 지시를 어기고 절대경로(`/Applications/…`)나 `~` 를 붙여 보내도
+    /// `Home.resolve` 를 거치면 홈 아래의 없는 경로가 되어 여기서 함께 걸러진다.
+    private func homeContains(_ relativePath: String) -> Bool {
+        FileManager.default.fileExists(atPath: Home.resolve(relativePath).path)
     }
 
     /// 추천받은 경로가 이미 계획에 있는지. UI 에서 중복 제안을 표시하는 데 쓴다.
